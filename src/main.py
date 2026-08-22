@@ -1,57 +1,159 @@
-import pandas as pd
+import joblib
 import matplotlib.pyplot as plt
+import pandas as pd
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    average_precision_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 DATA_PATH = "data/raw/ai4i2020.csv"
 
+FEATURES = [
+    "Air temperature [K]",
+    "Process temperature [K]",
+    "Rotational speed [rpm]",
+    "Torque [Nm]",
+    "Tool wear [min]",
+]
+
+TARGET = "Machine failure"
+
 
 def load_data(path: str) -> pd.DataFrame:
-    """Load the predictive maintenance dataset."""
     return pd.read_csv(path)
+
+
+def evaluate_model(model, X_test, y_test, name: str):
+    predictions = model.predict(X_test)
+    probabilities = model.predict_proba(X_test)[:, 1]
+
+    print(f"\n===== {name} =====")
+    print(classification_report(y_test, predictions))
+
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, predictions))
+
+    print("F1:", f1_score(y_test, predictions))
+    print("ROC-AUC:", roc_auc_score(y_test, probabilities))
+    print("PR-AUC:", average_precision_score(y_test, probabilities))
+
+    return predictions, probabilities
 
 
 def main():
     data = load_data(DATA_PATH)
 
-    print("\n****************************************************************************************************")
-    print("\nDataset Info:")
-    print(data.info())
+    X = data[FEATURES]
+    y = data[TARGET]
 
-    print("\n****************************************************************************************************")
-    print("\nGeneral Machine failure Info:")
-    print(data["Machine failure"].value_counts())
+    print("Dataset shape:", data.shape)
+    print("\nFailure distribution:")
+    print(y.value_counts())
 
-    features = [
-        "Air temperature [K]",
-        "Process temperature [K]",
-        "Rotational speed [rpm]",
-        "Torque [Nm]",
-        "Tool wear [min]",
-    ]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y,
+    )
 
-    print("\n****************************************************************************************************")
-    print("\nMachine failure Info By Selected Cols:")
-    print(data.groupby("Machine failure")[features].mean())
+    logistic_model = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "model",
+                LogisticRegression(
+                    class_weight="balanced",
+                    random_state=42,
+                    max_iter=1000,
+                ),
+            ),
+        ]
+    )
 
-    print("\n****************************************************************************************************")
-    print("\nTool Wear Distribution by Machine Failure:")
+    random_forest_model = RandomForestClassifier(
+        n_estimators=300,
+        class_weight="balanced",
+        random_state=42,
+        n_jobs=-1,
+    )
 
-    #failure_0 = data[data["Machine failure"] == 0]["Tool wear [min]"]
-    #failure_1 = data[data["Machine failure"] == 1]["Tool wear [min]"]
+    logistic_model.fit(X_train, y_train)
+    random_forest_model.fit(X_train, y_train)
 
-    failure_0 = data[data["Machine failure"] == 0]["Torque [Nm]"]
-    failure_1 = data[data["Machine failure"] == 1]["Torque [Nm]"]
+    evaluate_model(
+        logistic_model,
+        X_test,
+        y_test,
+        "Logistic Regression",
+    )
 
-    plt.hist(failure_0, bins=30, alpha=0.6, label="No Failure", density=True)
-    plt.hist(failure_1, bins=30, alpha=0.6, label="Failure", density=True)
+    evaluate_model(
+        random_forest_model,
+        X_test,
+        y_test,
+        "Random Forest",
+    )
 
-    plt.xlabel("Tool wear [min]")
-    plt.ylabel("Number of machines")
-    plt.title("Tool Wear Distribution by Machine Failure")
-    plt.legend()
+    feature_importance = pd.Series(
+        random_forest_model.feature_importances_,
+        index=FEATURES,
+    ).sort_values(ascending=False)
 
-    #plt.show()
-    plt.savefig("data/tool_wear_distribution.png")
+    print("\n===== Feature Importance =====")
+    print(feature_importance)
+
+    feature_importance.plot(kind="bar")
+    plt.title("Random Forest Feature Importance")
+    plt.ylabel("Importance")
+    plt.tight_layout()
+    plt.savefig("results/feature_importance.png")
+    plt.close()
+
+    predictions = random_forest_model.predict(X_test)
+
+    errors = X_test.copy()
+    errors["actual"] = y_test
+    errors["predicted"] = predictions
+
+    print("\n===== False Negatives =====")
+    print(errors[(errors["actual"] == 1) & (errors["predicted"] == 0)])
+
+    cm = confusion_matrix(y_test, predictions)
+
+    plt.imshow(cm)
+    plt.title("Random Forest Confusion Matrix")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.colorbar()
+
+    for i in range(2):
+        for j in range(2):
+            plt.text(j, i, cm[i, j], ha="center", va="center")
+
+    plt.tight_layout()
+    plt.savefig("results/confusion_matrix.png")
+    plt.close()
+
+    joblib.dump(
+        random_forest_model,
+        "models/random_forest.pkl",
+    )
+
+    print("\nModel saved to models/random_forest.pkl")
 
 
 if __name__ == "__main__":
